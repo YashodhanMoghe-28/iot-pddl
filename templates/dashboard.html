@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zone 1 — Industrial Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-raised: #1c2128;
+    --border: #30363d;
+    --border-light: #21262d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #57606a;
+    --green: #3fb950;
+    --green-dim: #1a4a23;
+    --amber: #d29922;
+    --amber-dim: #4d3a0f;
+    --red: #f85149;
+    --red-dim: #4d1816;
+    --blue: #58a6ff;
+    --font-mono: 'IBM Plex Mono', monospace;
+    --font-sans: 'Inter', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ===== TOP STATUS BANNER ===== */
+  .status-banner {
+    background: var(--panel-raised);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: border-color 0.4s ease;
+  }
+
+  .status-banner.alarm { border-bottom: 2px solid var(--red); }
+  .status-banner.warning { border-bottom: 2px solid var(--amber); }
+  .status-banner.nominal { border-bottom: 2px solid var(--green); }
+
+  .system-name {
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+  }
+
+  .system-name .zone-tag {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 8px;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: 1px solid;
+  }
+
+  .status-pill.nominal { color: var(--green); border-color: var(--green-dim); background: rgba(63,185,80,0.08); }
+  .status-pill.warning { color: var(--amber); border-color: var(--amber-dim); background: rgba(210,153,34,0.08); }
+  .status-pill.alarm { color: var(--red); border-color: var(--red-dim); background: rgba(248,81,73,0.08); }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  .banner-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  /* ===== MAIN GRID ===== */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 1px;
+    background: var(--border-light);
+  }
+
+  @media (max-width: 900px) {
+    .main-grid { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--bg);
+    padding: 24px;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+  }
+
+  .panel-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .panel-subtitle {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* ===== SENSOR GRID ===== */
+  .sensor-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .sensor-card {
+    background: var(--panel);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 14px 16px;
+    transition: border-color 0.3s ease, background 0.3s ease;
+  }
+
+  .sensor-card.violation {
+    border-color: var(--red-dim);
+    background: rgba(248,81,73,0.06);
+  }
+
+  .sensor-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .sensor-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .sensor-icon {
+    font-size: 15px;
+    color: var(--text-muted);
+  }
+
+  .sensor-card.violation .sensor-icon { color: var(--red); }
+
+  .sensor-value {
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 500;
+    line-height: 1;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+
+  .sensor-unit {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  .sensor-card.violation .sensor-value { color: var(--red); }
+
+  .sensor-bar-track {
+    margin-top: 10px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .sensor-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--green);
+    transition: width 0.4s ease, background 0.4s ease;
+  }
+
+  .sensor-card.violation .sensor-bar-fill { background: var(--red); }
+
+  .sensor-threshold-note {
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+
+  .sensor-card.binary .sensor-value {
+    font-size: 16px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+  }
+
+  .binary-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .binary-led {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: background 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  .binary-led.on { background: var(--green); box-shadow: 0 0 8px rgba(63,185,80,0.6); }
+  .binary-led.alarm { background: var(--red); box-shadow: 0 0 8px rgba(248,81,73,0.6); }
+
+  /* ===== ACTUATOR ROW ===== */
+  .actuator-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+
+  .actuator-chip {
+    background: var(--panel);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: border-color 0.3s ease, background 0.3s ease;
+  }
+
+  .actuator-chip.active {
+    border-color: var(--amber-dim);
+    background: rgba(210,153,34,0.07);
+  }
+
+  .actuator-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+
+  .actuator-chip.active .actuator-status-dot {
+    background: var(--amber);
+    box-shadow: 0 0 6px rgba(210,153,34,0.6);
+  }
+
+  .actuator-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .actuator-name {
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .actuator-state {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .actuator-chip.active .actuator-state { color: var(--amber); }
+
+  /* ===== RIGHT PANEL: PLANNER ===== */
+  .planner-meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  .meta-stat {
+    background: var(--panel);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+
+  .meta-stat-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+
+  .meta-stat-value {
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 500;
+  }
+
+  .plan-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-bottom: 24px;
+  }
+
+  .plan-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0.4;
+    transition: opacity 0.3s ease;
+  }
+
+  .plan-step:last-child { border-bottom: none; }
+
+  .plan-step.executed { opacity: 1; }
+  .plan-step.executing { opacity: 1; }
+
+  .plan-step-marker {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 1px;
+    transition: all 0.3s ease;
+  }
+
+  .plan-step.executed .plan-step-marker {
+    border-color: var(--green-dim);
+    background: rgba(63,185,80,0.1);
+    color: var(--green);
+  }
+
+  .plan-step.executing .plan-step-marker {
+    border-color: var(--blue);
+    color: var(--blue);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  .plan-step-body { flex: 1; min-width: 0; }
+
+  .plan-step-action {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .plan-step-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+
+  .plan-empty {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 20px 0;
+    text-align: center;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+  }
+
+  .pddl-block {
+    background: var(--panel);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .pddl-block .kw { color: var(--blue); }
+  .pddl-block .pred { color: var(--text-primary); }
+  .pddl-block .comment { color: var(--text-muted); }
+
+  .log-panel {
+    grid-column: 1 / -1;
+    background: var(--bg);
+    border-top: 1px solid var(--border-light);
+    padding: 20px 24px;
+  }
+
+  .log-entries {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .log-entry {
+    display: grid;
+    grid-template-columns: 90px 90px 1fr;
+    gap: 16px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border-light);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    align-items: baseline;
+  }
+
+  .log-entry:last-child { border-bottom: none; }
+
+  .log-time { color: var(--text-muted); }
+
+  .log-tag {
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    width: fit-content;
+  }
+
+  .log-tag.sense { color: var(--blue); background: rgba(88,166,255,0.1); }
+  .log-tag.plan { color: var(--text-primary); background: var(--panel); }
+  .log-tag.exec { color: var(--amber); background: rgba(210,153,34,0.1); }
+  .log-tag.idle { color: var(--green); background: rgba(63,185,80,0.1); }
+  .log-tag.network { color: var(--red); background: rgba(248,81,73,0.1); }
+
+  .log-detail { color: var(--text-secondary); }
+  .log-detail .hl { color: var(--text-primary); }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .conn-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .conn-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--red);
+  }
+
+  .conn-dot.connected { background: var(--green); }
+  .conn-dot.warning { background: var(--amber); }
+</style>
+</head>
+<body>
+
+  <div class="status-banner nominal" id="statusBanner">
+    <div>
+      <div class="system-name">Industrial safety monitor <span class="zone-tag">ZONE-1 / RPi3B + GrovePi+</span></div>
+    </div>
+    <div class="banner-right">
+      <div class="conn-indicator"><span class="conn-dot" id="connDot"></span><span id="connLabel">Connecting…</span></div>
+      <div class="status-pill nominal" id="statusPill">
+        <span class="status-dot"></span>
+        <span id="statusText">Nominal</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="main-grid">
+
+    <!-- LEFT: ENVIRONMENT STATE -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Current state of environment</div>
+        <div class="panel-subtitle" id="lastUpdate">no data yet</div>
+      </div>
+
+      <div class="sensor-grid">
+
+        <div class="sensor-card" id="card-temp">
+          <div class="sensor-card-head">
+            <span class="sensor-label"><i class="sensor-icon">&#9737;</i>Temperature</span>
+          </div>
+          <div class="sensor-value"><span id="val-temp">--</span><span class="sensor-unit">&deg;C</span></div>
+          <div class="sensor-bar-track"><div class="sensor-bar-fill" id="bar-temp" style="width: 0%;"></div></div>
+          <div class="sensor-threshold-note">Alert above 30.0 &deg;C &mdash; drives fan relay</div>
+        </div>
+
+        <div class="sensor-card" id="card-prox">
+          <div class="sensor-card-head">
+            <span class="sensor-label"><i class="sensor-icon">&#8596;</i>Proximity</span>
+          </div>
+          <div class="sensor-value"><span id="val-prox">--</span><span class="sensor-unit">cm</span></div>
+          <div class="sensor-bar-track"><div class="sensor-bar-fill" id="bar-prox" style="width: 0%;"></div></div>
+          <div class="sensor-threshold-note">Violation below 10 cm &mdash; drives buzzer</div>
+        </div>
+
+        <div class="sensor-card" id="card-sound">
+          <div class="sensor-card-head">
+            <span class="sensor-label"><i class="sensor-icon">&#9834;</i>Noise level</span>
+          </div>
+          <div class="sensor-value"><span id="val-sound">--</span><span class="sensor-unit">raw</span></div>
+          <div class="sensor-bar-track"><div class="sensor-bar-fill" id="bar-sound" style="width: 0%;"></div></div>
+          <div class="sensor-threshold-note">Alert above 200 &mdash; noise warning</div>
+        </div>
+
+        <div class="sensor-card" id="card-angle">
+          <div class="sensor-card-head">
+            <span class="sensor-label"><i class="sensor-icon">&#9651;</i>Door angle</span>
+          </div>
+          <div class="sensor-value"><span id="val-angle">--</span><span class="sensor-unit">&deg;</span></div>
+          <div class="sensor-bar-track"><div class="sensor-bar-fill" id="bar-angle" style="width: 0%;"></div></div>
+          <div class="sensor-threshold-note">Open above 15&deg; &mdash; door alert + audio</div>
+        </div>
+
+        <div class="sensor-card binary" id="card-pir">
+          <div class="sensor-card-head">
+            <span class="sensor-label"><i class="sensor-icon">&#9673;</i>Occupancy (PIR)</span>
+          </div>
+          <div class="sensor-value">
+            <span class="binary-indicator"><span class="binary-led" id="led-pir"></span><span id="val-pir">--</span></span>
+          </div>
+          <div class="sensor-threshold-note">Checked every 15s, latched between checks</div>
+        </div>
+
+        <div class="sensor-card binary" id="card-door">
+          <div class="sensor-card-head">
+            <span class="sensor-label"><i class="sensor-icon">&#8862;</i>Door status</span>
+          </div>
+          <div class="sensor-value">
+            <span class="binary-indicator"><span class="binary-led" id="led-door"></span><span id="val-door">--</span></span>
+          </div>
+          <div class="sensor-threshold-note">Derived from rotary angle sensor</div>
+        </div>
+
+      </div>
+
+      <div class="panel-header">
+        <div class="panel-title">Actuator state</div>
+        <div class="panel-subtitle">from actuators/zone1</div>
+      </div>
+
+      <div class="actuator-row">
+        <div class="actuator-chip" id="act-fan">
+          <span class="actuator-status-dot"></span>
+          <div class="actuator-text">
+            <span class="actuator-name">Cooling fan</span>
+            <span class="actuator-state" id="act-fan-state">Off &middot; relay</span>
+          </div>
+        </div>
+        <div class="actuator-chip" id="act-buzzer">
+          <span class="actuator-status-dot"></span>
+          <div class="actuator-text">
+            <span class="actuator-name">Buzzer</span>
+            <span class="actuator-state" id="act-buzzer-state">Off &middot; physical</span>
+          </div>
+        </div>
+        <div class="actuator-chip" id="act-led">
+          <span class="actuator-status-dot"></span>
+          <div class="actuator-text">
+            <span class="actuator-name">Occupancy LED</span>
+            <span class="actuator-state" id="act-led-state">Off &middot; physical</span>
+          </div>
+        </div>
+        <div class="actuator-chip" id="act-noise">
+          <span class="actuator-status-dot"></span>
+          <div class="actuator-text">
+            <span class="actuator-name">Noise warning</span>
+            <span class="actuator-state" id="act-noise-state">Off &middot; LCD</span>
+          </div>
+        </div>
+        <div class="actuator-chip" id="act-door">
+          <span class="actuator-status-dot"></span>
+          <div class="actuator-text">
+            <span class="actuator-name">Door alert</span>
+            <span class="actuator-state" id="act-door-state">Off &middot; LCD + audio</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: PLANNER -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Latest plan being executed</div>
+        <div class="panel-subtitle" id="plannerTimestamp">no plan yet</div>
+      </div>
+
+      <div class="planner-meta">
+        <div class="meta-stat">
+          <div class="meta-stat-label">Plan length</div>
+          <div class="meta-stat-value" id="meta-length">&ndash;</div>
+        </div>
+        <div class="meta-stat">
+          <div class="meta-stat-label">Last action</div>
+          <div class="meta-stat-value" id="meta-last-action" style="font-size: 13px;">&ndash;</div>
+        </div>
+      </div>
+
+      <div class="plan-timeline" id="planTimeline">
+        <div class="plan-empty">Waiting for first sensor update…</div>
+      </div>
+
+      <div class="panel-header">
+        <div class="panel-title">Current world state (init predicates)</div>
+        <div class="panel-subtitle">from sensors/zone1</div>
+      </div>
+
+      <div class="pddl-block" id="pddlBlock"><span class="comment">&#9472; waiting for data</span></div>
+
+    </div>
+
+    <!-- BOTTOM: EVENT LOG -->
+    <div class="log-panel">
+      <div class="panel-header" style="margin-bottom: 12px;">
+        <div class="panel-title">Live event log</div>
+        <div class="panel-subtitle">sensors/zone1 &middot; actions/zone1 &middot; actuators/zone1 &middot; system/zone1</div>
+      </div>
+      <div class="log-entries" id="logEntries"></div>
+    </div>
+
+  </div>
+
+<script>
+(function() {
+
+  var ACTION_LABELS = {
+    'turn-on-fan':           'Activate cooling fan via relay',
+    'turn-off-fan':          'Deactivate cooling fan',
+    'sound-buzzer':          'Sound proximity buzzer',
+    'stop-buzzer':           'Silence buzzer',
+    'light-occupancy-led':   'Light occupancy indicator LED',
+    'unlight-occupancy-led': 'Turn off occupancy LED',
+    'activate-noise-warning':'Show noise warning on LCD',
+    'clear-noise-warning':   'Clear noise warning',
+    'activate-door-alert':   'Show door alert on LCD + play audio',
+    'clear-door-alert':      'Clear door alert'
+  };
+
+  var THRESH = { temp: 30, prox: 10, sound: 200, angle: 15 };
+
+  var planSteps = [];   // actions accumulated for the "current plan" display
+  var lastSensorState = {};
+
+  function fmt(n, d) {
+    if (n === null || n === undefined) return '--';
+    return Number(n).toFixed(d === undefined ? 1 : d);
+  }
+
+  function nowTime() {
+    return new Date().toLocaleTimeString('en-GB', { hour12: false });
+  }
+
+  function setBar(id, pct) {
+    var el = document.getElementById(id);
+    el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  }
+
+  function addLogEntry(tag, label, detail) {
+    var entries = document.getElementById('logEntries');
+    var row = document.createElement('div');
+    row.className = 'log-entry';
+    row.innerHTML =
+      '<div class="log-time">' + nowTime() + '</div>' +
+      '<div><span class="log-tag ' + tag + '">' + label + '</span></div>' +
+      '<div class="log-detail">' + detail + '</div>';
+    entries.insertBefore(row, entries.firstChild);
+    while (entries.children.length > 14) entries.removeChild(entries.lastChild);
+  }
+
+  function renderSensors(data) {
+    lastSensorState = data;
+
+    document.getElementById('val-temp').textContent = fmt(data.temperature);
+    var tempViol = !!data.temp_high;
+    document.getElementById('card-temp').classList.toggle('violation', tempViol);
+    setBar('bar-temp', (data.temperature || 0) / 45 * 100);
+
+    document.getElementById('val-prox').textContent = data.proximity_cm != null ? Math.round(data.proximity_cm) : '--';
+    var proxViol = !!data.proximity_violation;
+    document.getElementById('card-prox').classList.toggle('violation', proxViol);
+    setBar('bar-prox', (data.proximity_cm || 0) / 100 * 100);
+
+    document.getElementById('val-sound').textContent = data.sound_level != null ? Math.round(data.sound_level) : '--';
+    var soundViol = !!data.noise_high;
+    document.getElementById('card-sound').classList.toggle('violation', soundViol);
+    setBar('bar-sound', (data.sound_level || 0) / 400 * 100);
+
+    document.getElementById('val-angle').textContent = data.door_angle != null ? Math.round(data.door_angle) : '--';
+    var doorViol = !!data.door_open;
+    document.getElementById('card-angle').classList.toggle('violation', doorViol);
+    setBar('bar-angle', (data.door_angle || 0) / 90 * 100);
+
+    var pirLed = document.getElementById('led-pir');
+    pirLed.classList.toggle('on', !!data.occupied);
+    document.getElementById('val-pir').textContent = data.occupied ? 'Occupied' : 'Vacant';
+
+    var doorLed = document.getElementById('led-door');
+    doorLed.classList.toggle('alarm', doorViol);
+    document.getElementById('val-door').textContent = doorViol ? 'Open' : 'Closed';
+    document.getElementById('card-door').classList.toggle('violation', doorViol);
+
+    document.getElementById('lastUpdate').textContent = 'updated ' + nowTime();
+
+    renderBanner({ tempViol: tempViol, proxViol: proxViol, soundViol: soundViol, doorViol: doorViol });
+    renderInitBlock(data);
+
+    addLogEntry('sense', 'sense', 'Sensor update received');
+  }
+
+  function renderBanner(v) {
+    var banner = document.getElementById('statusBanner');
+    var pill = document.getElementById('statusPill');
+    var text = document.getElementById('statusText');
+
+    banner.classList.remove('nominal', 'warning', 'alarm');
+    pill.classList.remove('nominal', 'warning', 'alarm');
+
+    if (v.proxViol || v.doorViol) {
+      banner.classList.add('alarm'); pill.classList.add('alarm'); text.textContent = 'Alarm';
+    } else if (v.tempViol || v.soundViol) {
+      banner.classList.add('warning'); pill.classList.add('warning'); text.textContent = 'Warning';
+    } else {
+      banner.classList.add('nominal'); pill.classList.add('nominal'); text.textContent = 'Nominal';
+    }
+  }
+
+  function renderInitBlock(data) {
+    var lines = [];
+    if (data.temp_high) lines.push('(temp-high zone1)');
+    if (data.proximity_violation) lines.push('(proximity-violation zone1)');
+    if (data.occupied) lines.push('(occupied zone1)');
+    if (data.noise_high) lines.push('(noise-high zone1)');
+    if (data.door_open) lines.push('(door-open zone1)');
+
+    var block = document.getElementById('pddlBlock');
+    if (lines.length === 0) {
+      block.innerHTML = '<span class="comment">&#9472; all predicates false, zone1 is environmentally clear</span>';
+    } else {
+      block.innerHTML = lines.map(function(l) {
+        return '<span class="pred">' + l + '</span>';
+      }).join('\n');
+    }
+  }
+
+  function renderActuators(data) {
+    var map = {
+      fan_on:             { chip: 'act-fan',    state: 'act-fan-state',    on: 'Running &middot; relay',     off: 'Off &middot; relay' },
+      buzzer_on:          { chip: 'act-buzzer', state: 'act-buzzer-state', on: 'Sounding &middot; physical', off: 'Off &middot; physical' },
+      occupancy_led_on:   { chip: 'act-led',    state: 'act-led-state',    on: 'Lit &middot; physical',      off: 'Off &middot; physical' },
+      noise_warning_on:   { chip: 'act-noise',  state: 'act-noise-state',  on: 'Active &middot; LCD',        off: 'Off &middot; LCD' },
+      door_alert_on:      { chip: 'act-door',   state: 'act-door-state',   on: 'Active &middot; LCD + audio',off: 'Off &middot; LCD + audio' }
+    };
+    Object.keys(map).forEach(function(key) {
+      if (!(key in data)) return;
+      var cfg = map[key];
+      var on = !!data[key];
+      document.getElementById(cfg.chip).classList.toggle('active', on);
+      document.getElementById(cfg.state).innerHTML = on ? cfg.on : cfg.off;
+    });
+
+    addLogEntry('exec', 'actuator', 'Actuator state confirmed by RPi');
+  }
+
+  function renderAction(data) {
+    var action = data.action;
+    if (!action) return;
+
+    document.getElementById('plannerTimestamp').textContent = 'last update ' + nowTime();
+    document.getElementById('meta-last-action').textContent = action;
+
+    planSteps.push(action);
+    if (planSteps.length > 6) planSteps.shift();  // keep timeline readable
+
+    document.getElementById('meta-length').textContent = planSteps.length;
+
+    var timeline = document.getElementById('planTimeline');
+    timeline.innerHTML = '';
+    planSteps.forEach(function(a, i) {
+      var isLast = (i === planSteps.length - 1);
+      var step = document.createElement('div');
+      step.className = 'plan-step ' + (isLast ? 'executing' : 'executed');
+      step.innerHTML =
+        '<div class="plan-step-marker">' + (i + 1) + '</div>' +
+        '<div class="plan-step-body">' +
+          '<div class="plan-step-action">' + a + ' zone1</div>' +
+          '<div class="plan-step-desc">' + (ACTION_LABELS[a] || 'Action dispatched') + '</div>' +
+        '</div>';
+      timeline.appendChild(step);
+
+      if (isLast) {
+        setTimeout(function() {
+          step.classList.remove('executing');
+          step.classList.add('executed');
+        }, 900);
+      }
+    });
+
+    addLogEntry('plan', 'action', 'Planner dispatched <span class="hl">' + action + '</span>');
+  }
+
+  // NEW: handles system/zone1 messages -- network errors and dropped
+  // stale actions, published by planning_loop.py and actuator_executor.py
+  function renderSystemUpdate(data) {
+    var connDot = document.getElementById('connDot');
+
+    if (data.status === 'network_error') {
+      addLogEntry('network', 'network', 'Failed to deliver <span class="hl">' + data.action + '</span> to the RPi after retries');
+      connDot.classList.add('warning');
+      setTimeout(function() { connDot.classList.remove('warning'); }, 4000);
+
+    } else if (data.status === 'stale_action_dropped') {
+      addLogEntry('network', 'network', 'RPi dropped stale action <span class="hl">' + data.action + '</span> (age ' + data.age_seconds + 's)');
+      connDot.classList.add('warning');
+      setTimeout(function() { connDot.classList.remove('warning'); }, 4000);
+
+    } else if (data.status === 'connected') {
+      addLogEntry('idle', 'network', 'RPi actuator link (re)connected to broker');
+    }
+  }
+
+  /* ===== MQTT bridge via socket.io (dashboard_server.py) ===== */
+  var socket = io({ reconnection: true, timeout: 4000 });
+
+  socket.on('connect', function() {
+    document.getElementById('connDot').classList.add('connected');
+    document.getElementById('connLabel').textContent = 'Live (MQTT bridge)';
+    addLogEntry('idle', 'system', 'Connected to dashboard bridge');
+  });
+
+  socket.on('disconnect', function() {
+    document.getElementById('connDot').classList.remove('connected');
+    document.getElementById('connLabel').textContent = 'Disconnected';
+  });
+
+  socket.on('sensor_update', renderSensors);
+  socket.on('actuator_update', renderActuators);
+  socket.on('action_update', renderAction);
+  socket.on('system_update', renderSystemUpdate);   // NEW
+
+})();
+</script>
+</body>
+</html>
