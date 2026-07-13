@@ -164,6 +164,14 @@
     background: rgba(248,81,73,0.06);
   }
 
+  .sensor-card.inactive {
+    opacity: 0.45;
+  }
+
+  .sensor-card.inactive .sensor-threshold-note {
+    color: var(--blue);
+  }
+
   .sensor-card-head {
     display: flex;
     align-items: center;
@@ -547,7 +555,7 @@
           </div>
           <div class="sensor-value"><span id="val-prox">--</span><span class="sensor-unit">cm</span></div>
           <div class="sensor-bar-track"><div class="sensor-bar-fill" id="bar-prox" style="width: 0%;"></div></div>
-          <div class="sensor-threshold-note">Violation below 10 cm &mdash; drives buzzer</div>
+          <div class="sensor-threshold-note" id="note-prox">Violation below 10 cm &mdash; drives buzzer</div>
         </div>
 
         <div class="sensor-card" id="card-sound">
@@ -556,7 +564,7 @@
           </div>
           <div class="sensor-value"><span id="val-sound">--</span><span class="sensor-unit">raw</span></div>
           <div class="sensor-bar-track"><div class="sensor-bar-fill" id="bar-sound" style="width: 0%;"></div></div>
-          <div class="sensor-threshold-note">Alert above 200 &mdash; noise warning</div>
+          <div class="sensor-threshold-note" id="note-sound">Alert above 200 &mdash; noise warning</div>
         </div>
 
         <div class="sensor-card" id="card-angle">
@@ -575,7 +583,7 @@
           <div class="sensor-value">
             <span class="binary-indicator"><span class="binary-led" id="led-pir"></span><span id="val-pir">--</span></span>
           </div>
-          <div class="sensor-threshold-note">Checked every 15s, latched between checks</div>
+          <div class="sensor-threshold-note"><span id="occupancy-countdown" style="color: var(--text-secondary); font-family: var(--font-mono);">--:--</span></div>
         </div>
 
         <div class="sensor-card binary" id="card-door">
@@ -698,6 +706,59 @@
   var planSteps = [];   // actions accumulated for the "current plan" display
   var lastSensorState = {};
 
+  // NEW: occupancy check countdown state.
+  // countdownTargetMs is an absolute point in the BROWSER's own clock
+  // (performance.now()-based), computed once per sensor_update from
+  // the RPi-reported remaining time. Only the remaining-seconds VALUE
+  // crosses machines -- all ticking after that uses the browser's own
+  // clock, so RPi/laptop clock skew never matters.
+  //
+  // The RPi only slow-polls (waits OCCUPANCY_CHECK_INTERVAL between
+  // checks) while it believes the zone is OCCUPIED. While VACANT, it
+  // checks every single cycle (~1s) so a new entry is caught almost
+  // immediately -- so there's no meaningful "countdown" to show in
+  // that state; we show "Checking live" instead.
+  var countdownTargetMs = null;
+
+  function updateOccupancyCountdown(data) {
+    if (data.occupancy_last_check == null || data.occupancy_check_interval == null || data.timestamp == null) {
+      return;   // older sensor payload without these fields -- leave as-is
+    }
+
+    if (!data.occupied) {
+      countdownTargetMs = null;   // vacant -- fast-poll mode, no countdown
+      return;
+    }
+
+    var elapsedSinceCheck = data.timestamp - data.occupancy_last_check;
+    var remainingSeconds = data.occupancy_check_interval - elapsedSinceCheck;
+    remainingSeconds = Math.max(0, remainingSeconds);
+
+    countdownTargetMs = performance.now() + remainingSeconds * 1000;
+  }
+
+  function tickOccupancyCountdown() {
+    var el = document.getElementById('occupancy-countdown');
+    if (!el) return;
+
+    if (countdownTargetMs === null) {
+      el.textContent = 'Checking live (vacant)';
+      el.style.color = 'var(--blue)';
+      return;
+    }
+
+    var remainingMs = countdownTargetMs - performance.now();
+    var remainingSec = Math.max(0, Math.round(remainingMs / 1000));
+
+    var mm = Math.floor(remainingSec / 60);
+    var ss = remainingSec % 60;
+    el.textContent = 'Next check in ' + mm + ':' + (ss < 10 ? '0' : '') + ss;
+
+    el.style.color = remainingSec <= 10 ? 'var(--amber)' : 'var(--text-secondary)';
+  }
+
+  setInterval(tickOccupancyCountdown, 1000);
+
   function fmt(n, d) {
     if (n === null || n === undefined) return '--';
     return Number(n).toFixed(d === undefined ? 1 : d);
@@ -734,12 +795,23 @@
 
     document.getElementById('val-prox').textContent = data.proximity_cm != null ? Math.round(data.proximity_cm) : '--';
     var proxViol = !!data.proximity_violation;
-    document.getElementById('card-prox').classList.toggle('violation', proxViol);
+    var occupied = !!data.occupied;
+    var proxCard = document.getElementById('card-prox');
+    proxCard.classList.toggle('violation', proxViol);
+    proxCard.classList.toggle('inactive', !occupied);
+    document.getElementById('note-prox').textContent = occupied
+      ? 'Violation below 10 cm — drives buzzer'
+      : 'Inactive — only checked while occupied';
     setBar('bar-prox', (data.proximity_cm || 0) / 100 * 100);
 
     document.getElementById('val-sound').textContent = data.sound_level != null ? Math.round(data.sound_level) : '--';
     var soundViol = !!data.noise_high;
-    document.getElementById('card-sound').classList.toggle('violation', soundViol);
+    var soundCard = document.getElementById('card-sound');
+    soundCard.classList.toggle('violation', soundViol);
+    soundCard.classList.toggle('inactive', !occupied);
+    document.getElementById('note-sound').textContent = occupied
+      ? 'Alert above 200 — noise warning'
+      : 'Inactive — only checked while occupied';
     setBar('bar-sound', (data.sound_level || 0) / 400 * 100);
 
     document.getElementById('val-angle').textContent = data.door_angle != null ? Math.round(data.door_angle) : '--';
@@ -750,6 +822,9 @@
     var pirLed = document.getElementById('led-pir');
     pirLed.classList.toggle('on', !!data.occupied);
     document.getElementById('val-pir').textContent = data.occupied ? 'Occupied' : 'Vacant';
+
+    updateOccupancyCountdown(data);
+    tickOccupancyCountdown();
 
     var doorLed = document.getElementById('led-door');
     doorLed.classList.toggle('alarm', doorViol);

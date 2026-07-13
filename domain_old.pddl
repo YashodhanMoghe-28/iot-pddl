@@ -38,8 +38,7 @@
  )
 
  ;; =====================================================
- ;; FAN -- always active regardless of occupancy
- ;; (factory must stay ventilated whether or not anyone is there)
+ ;; FAN
  ;; =====================================================
 
  (:action turn-on-fan
@@ -71,17 +70,7 @@
  )
 
  ;; =====================================================
- ;; BUZZER -- NOW requires occupancy.
- ;;
- ;; CHANGED: sound-buzzer now requires (occupied ?z) in addition to
- ;; (proximity-violation ?z). There is no point sounding a
- ;; too-close-to-machinery alarm if nobody is in the zone to be at risk.
- ;;
- ;; stop-buzzer is UNCHANGED. It doesn't need an occupancy check because
- ;; the sensor publisher already forces proximity-violation to false
- ;; whenever occupied is false -- so stop-buzzer's existing precondition
- ;; (not (proximity-violation ?z)) is already satisfied in that case.
- ;; This keeps the domain strict STRIPS (no disjunction needed).
+ ;; BUZZER
  ;; =====================================================
 
  (:action sound-buzzer
@@ -90,7 +79,6 @@
 
     :precondition
        (and
-          (occupied ?z)
           (proximity-violation ?z)
           (not (buzzer-on ?z))
        )
@@ -114,7 +102,7 @@
  )
 
  ;; =====================================================
- ;; OCCUPANCY LED -- unchanged, this IS the occupancy indicator
+ ;; OCCUPANCY LED
  ;; =====================================================
 
  (:action light-occupancy-led
@@ -146,8 +134,7 @@
  )
 
  ;; =====================================================
- ;; NOISE WARNING -- NOW requires occupancy, same reasoning as buzzer.
- ;; clear-noise-warning UNCHANGED for the same reason as stop-buzzer.
+ ;; NOISE WARNING
  ;; =====================================================
 
  (:action activate-noise-warning
@@ -156,7 +143,6 @@
 
     :precondition
        (and
-          (occupied ?z)
           (noise-high ?z)
           (not (noise-warning-on ?z))
        )
@@ -180,8 +166,7 @@
  )
 
  ;; =====================================================
- ;; DOOR ALERT -- always active regardless of occupancy
- ;; (security check, same reasoning as fan)
+ ;; DOOR ALERT
  ;; =====================================================
 
  (:action activate-door-alert

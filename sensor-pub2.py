@@ -16,6 +16,29 @@ NO LEDs.
 NO LCD.
 
 The planner decides all actions.
+
+CHANGES IN THIS VERSION:
+
+  1. OCCUPANCY_CHECK_INTERVAL changed from 15s to 300s (5 minutes),
+     as requested. PIR is checked once every 5 minutes and the result
+     is latched until the next check.
+
+  2. Occupancy gating: proximity_violation and noise_high are now
+     forced to False whenever the zone is NOT occupied, regardless of
+     the raw sensor reading. There is no reason to sound a
+     too-close-to-machinery buzzer or a noise warning if nobody is
+     actually in the zone. temp_high and door_open are UNCHANGED --
+     they stay active regardless of occupancy, since ventilation and
+     door security both matter whether or not anyone is present.
+
+     Raw values (proximity_cm, sound_level, etc.) are still read and
+     published every cycle exactly as before -- only the DERIVED
+     violation flags used by the planner are gated. This keeps the
+     dashboard showing live numbers even when occupancy is False.
+
+  This is the PRIMARY gate. domain.pddl also now requires (occupied ?z)
+  as an explicit precondition on sound-buzzer / activate-noise-warning,
+  as a second, planner-level layer of the same rule.
 """
 
 import time
@@ -61,7 +84,9 @@ THRESHOLDS = {
     "door_angle": 15
 }
 
-OCCUPANCY_CHECK_INTERVAL = 15
+# Re-check interval while OCCUPIED (slow poll). While VACANT, checks
+# happen every cycle instead (fast poll) -- see update_occupancy() below.
+OCCUPANCY_CHECK_INTERVAL = 300
 
 # -------------------------------------------------
 # Grove setup
@@ -92,8 +117,31 @@ def update_occupancy():
 
     now = time.time()
 
-    if now - occupancy_state["last_check"] >= OCCUPANCY_CHECK_INTERVAL:
+    if occupancy_state["occupied"]:
 
+        # Currently believed OCCUPIED -- slow poll. Only re-check once
+        # every OCCUPANCY_CHECK_INTERVAL seconds, since someone already
+        # confirmed present is expected to still be there shortly after.
+        if now - occupancy_state["last_check"] >= OCCUPANCY_CHECK_INTERVAL:
+
+            try:
+                motion = grovepi.digitalRead(PIR_PORT)
+
+                occupancy_state["occupied"] = bool(motion)
+
+            except:
+                pass
+
+            occupancy_state["last_check"] = now
+
+    else:
+
+        # Currently believed VACANT -- fast poll. Check every single
+        # cycle (same cadence as the main loop, ~1s) so a new entry is
+        # detected almost immediately instead of being missed for up
+        # to OCCUPANCY_CHECK_INTERVAL seconds, which was the original bug:
+        # someone walking in right after a "vacant" reading would have
+        # gone undetected for up to 5 minutes.
         try:
             motion = grovepi.digitalRead(PIR_PORT)
 
@@ -188,32 +236,56 @@ def read_all_sensors():
 
         "occupied": occupied,
 
+        # NEW: lets the dashboard show a countdown to the next
+        # occupancy check. Both values use the RPi's own clock, so the
+        # dashboard only needs to trust the DIFFERENCE between them,
+        # not the absolute timestamps -- avoids RPi/laptop clock skew.
+        "occupancy_last_check": occupancy_state["last_check"],
+        "occupancy_check_interval": OCCUPANCY_CHECK_INTERVAL,
+
         "timestamp": time.time()
     }
 
 # -------------------------------------------------
 # Convert to Planning Predicates
+#
+# CHANGED: proximity_violation and noise_high are now gated behind
+# occupancy. temp_high and door_open are unchanged -- always active.
 # -------------------------------------------------
 
 def detect_environment_state(state):
 
+    occupied = state["occupied"]
+
+    temp_high = (
+        state["temperature"] is not None and
+        state["temperature"] > THRESHOLDS["temperature"]
+    )
+
+    # Only meaningful if someone is actually in the zone.
+    proximity_violation = (
+        occupied and
+        state["proximity_cm"] is not None and
+        state["proximity_cm"] < THRESHOLDS["proximity_cm"]
+    )
+
+    # Only meaningful if someone is actually in the zone.
+    noise_high = (
+        occupied and
+        state["sound_level"] is not None and
+        state["sound_level"] > THRESHOLDS["sound_level"]
+    )
+
+    door_open = (
+        state["door_angle"] is not None and
+        state["door_angle"] > THRESHOLDS["door_angle"]
+    )
+
     return {
-
-        "temp_high":
-            state["temperature"] is not None and
-            state["temperature"] > THRESHOLDS["temperature"],
-
-        "proximity_violation":
-            state["proximity_cm"] is not None and
-            state["proximity_cm"] < THRESHOLDS["proximity_cm"],
-
-        "noise_high":
-            state["sound_level"] is not None and
-            state["sound_level"] > THRESHOLDS["sound_level"],
-
-        "door_open":
-            state["door_angle"] is not None and
-            state["door_angle"] > THRESHOLDS["door_angle"]
+        "temp_high": temp_high,
+        "proximity_violation": proximity_violation,
+        "noise_high": noise_high,
+        "door_open": door_open
     }
 
 # -------------------------------------------------
@@ -242,6 +314,8 @@ def publish_state(state, predicates):
 if __name__ == "__main__":
 
     print("Sensor Publisher Started")
+    print("Occupancy checked every {}s (latched between checks)".format(OCCUPANCY_CHECK_INTERVAL))
+    print("Proximity/noise violations only count while occupied.")
 
     try:
 

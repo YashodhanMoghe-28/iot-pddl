@@ -8,12 +8,12 @@
  )
 
  (:init
-    
+    (occupied zone1) (occupancy-led-on zone1)
  )
 
  (:goal
     (and
-        (not (fan-on zone1)) (not (buzzer-on zone1)) (not (occupancy-led-on zone1)) (not (noise-warning-on zone1)) (not (door-alert-on zone1))
+        (not (fan-on zone1)) (not (buzzer-on zone1)) (occupancy-led-on zone1) (not (noise-warning-on zone1)) (not (door-alert-on zone1))
     )
  )
 

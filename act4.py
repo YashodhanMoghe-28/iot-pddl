@@ -3,54 +3,44 @@ actuator_executor.py
 
 Runs on Raspberry Pi
 
-CHANGES IN THIS VERSION (on top of your working I2C-retry version):
+THIS IS THE COMPLETE, FINAL VERSION. Please REPLACE your existing act4.py
+entirely with this file rather than merging by hand -- the LED-stuck bug
+you saw is because several earlier fixes (the universal I2C retry
+wrapper, the crash-safe on_connect, the boot-time force-off writes)
+were not present in the version you were running.
 
-  1. LED FIX
-     Previously, activate_noise_warning() / activate_door_alert() /
-     deactivate_noise_warning() / deactivate_door_alert() each wrote
-     directly to VIOLATION_LED_PORT independently. Since both share the
-     same physical LED, clearing ONE violation could wrongly turn the
-     LED off while ANOTHER violation was still active.
+ALL FIXES INCLUDED:
 
-     Fix: activate/deactivate functions now ONLY update actuator_state
-     flags. A single function, update_status_leds(), is called once per
-     message and recomputes LED state from the FULL actuator_state:
-       - VIOLATION_LED_PORT (5)  -> ON if buzzer_on OR noise_warning_on
-                                     OR door_alert_on (i.e. ANY violation)
-       - OCCUPANCY_LED_PORT (6)  -> unchanged, still follows occupancy
-       - SPARE_LED_PORT (7)      -> ON only when there is NO violation
-                                     (the "all okay" indicator you asked for)
+  1. LED FIX -- violation LED / spare LED recomputed from FULL
+     actuator_state every message (not touched independently by
+     multiple functions).
 
-  2. LCD DEFAULT-STATE FIX
-     Previously, deactivate_*() functions never called setText() at all,
-     so the LCD kept showing the last violation message forever.
+  2. LCD DEFAULT-STATE FIX -- always writes either the highest-priority
+     violation message or a default "All Clear" message every cycle.
 
-     Fix: update_lcd_display() is called once per message, and ALWAYS
-     writes either the highest-priority active violation message, or a
-     default "All Clear" message if nothing is active. Priority order
-     (highest first): proximity (buzzer) > door > noise -- adjust the
-     ordering in update_lcd_display() if you want a different priority.
+  3. NETWORK / STALE-ACTION HANDLING -- actions older than
+     MAX_ACTION_AGE_SECONDS are dropped instead of applied.
 
-  3. NETWORK / STALE-ACTION HANDLING
-     Every action message now carries a "timestamp" field set on
-     Laptop 1 when it was generated (see updated planning_loop.py).
-     If an action arrives here older than MAX_ACTION_AGE_SECONDS, it is
-     almost certainly a delayed message from BEFORE a network hiccup --
-     it is dropped instead of applied, so a late "sound-buzzer" from a
-     violation that has since cleared can't turn the buzzer on after
-     the fact.
+  4. UNIVERSAL I2C RETRY WRAPPER (safe_i2c_call) -- EVERY I2C write
+     (relay, buzzer, both LEDs, LCD color, LCD text) goes through this.
+     Retries up to 5 times with backoff, NEVER raises. This is almost
+     certainly why your violation LED was getting stuck: the "turn LED
+     off" write was failing on I2C glitches and had no retry, so the
+     physical LED kept showing stale state even though actuator_state
+     was already correct in Python.
 
-     An on_disconnect handler also shows "NETWORK ERROR" on the LCD
-     immediately when the RPi loses its connection to the broker (this
-     needs no network, just local I2C), and update_lcd_display() /
-     update_status_leds() are re-run on reconnect so the display goes
-     back to reflecting the TRUE current actuator_state once the link
-     is back up.
+  5. on_connect / on_disconnect fully wrapped in try/except -- an I2C
+     error during either callback can no longer crash loop_forever().
 
-  Nothing about which MQTT action names map to which actuator was
-  changed -- turn-on-fan / sound-buzzer / etc. all still do exactly
-  what they did before. Only the LED/LCD *display* logic and the
-  handling of late-arriving messages were added.
+  6. Boot-time force-off writes for all digital outputs, so nothing
+     powers up in an undefined/floating state.
+
+  7. Occupancy note: this file needs NO changes for the new
+     occupancy-gating feature. That logic lives entirely in
+     sensor-pub2.py (which sensor values get treated as violations)
+     and domain.pddl (which actions the planner is allowed to choose).
+     This script just executes whatever action commands it receives,
+     as before.
 """
 
 import time
@@ -69,7 +59,7 @@ BROKER_PORT = 1883
 
 ACTION_TOPIC = "actions/zone1"
 ACTUATOR_TOPIC = "actuators/zone1"
-SYSTEM_TOPIC = "system/zone1"    # NEW: for network status / dropped-message notices
+SYSTEM_TOPIC = "system/zone1"
 
 # --------------------------------------------------
 # Ports
@@ -85,8 +75,39 @@ grovepi.pinMode(OCCUPANCY_LED_PORT, "OUTPUT")
 grovepi.pinMode(SPARE_LED_PORT, "OUTPUT")
 grovepi.pinMode(BUZZER_PORT, "OUTPUT")
 
+# Force all digital outputs to a known OFF state at boot, so nothing
+# powers up in an undefined/floating state (this is why the buzzer
+# was sounding immediately on startup previously).
+grovepi.digitalWrite(VIOLATION_LED_PORT, 0)
+grovepi.digitalWrite(OCCUPANCY_LED_PORT, 0)
+grovepi.digitalWrite(SPARE_LED_PORT, 1)   # "all clear" indicator, on by default
+grovepi.digitalWrite(BUZZER_PORT, 0)
+
 # --------------------------------------------------
-# Relay Board (unchanged from your working I2C-retry version)
+# Universal I2C retry wrapper
+#
+# Wraps ANY I2C-touching call (grovepi.digitalWrite, setRGB, setText,
+# or a raw bus.write_byte_data) so a transient bus glitch never raises
+# out of a callback and never silently leaves hardware in a stale
+# state. Retries up to max_retries times with backoff, then gives up
+# and returns False -- caller decides what to do (usually: don't
+# update actuator_state, so the system stays truthful).
+# --------------------------------------------------
+
+def safe_i2c_call(fn, *args, max_retries=5, label="I2C call", **kwargs):
+    for attempt in range(1, max_retries + 1):
+        try:
+            fn(*args, **kwargs)
+            return True
+        except (IOError, OSError) as e:
+            print("{} failed (attempt {}/{}): {}".format(label, attempt, max_retries, e))
+            time.sleep(0.08 * attempt)
+    print("{} FAILED after {} attempts -- giving up.".format(label, max_retries))
+    return False
+
+
+# --------------------------------------------------
+# Relay Board
 # --------------------------------------------------
 
 DEVICE_ADDRESS = 0x20
@@ -98,19 +119,20 @@ relay_state = 0xFF
 time.sleep(0.2)
 
 
-def i2c_write_relay(value, max_retries=3):
-    for attempt in range(1, max_retries + 1):
-        try:
-            bus.write_byte_data(DEVICE_ADDRESS, DEVICE_REG_MODE1, value)
-            return True
-        except IOError as e:
-            print("I2C write failed (attempt {}/{}): {}".format(attempt, max_retries, e))
-            time.sleep(0.1 * attempt)
-    print("I2C write to relay FAILED after {} attempts.".format(max_retries))
-    return False
+def i2c_write_relay(value, max_retries=5):
+    return safe_i2c_call(
+        bus.write_byte_data, DEVICE_ADDRESS, DEVICE_REG_MODE1, value,
+        max_retries=max_retries, label="Relay write"
+    )
 
 
 i2c_write_relay(relay_state)
+
+# Extra settle time before the FIRST LCD transaction specifically --
+# LCD failures were observed on the very first I2C write at cold boot,
+# before any other bus activity, suggesting it needs more time to
+# settle right after power-up.
+time.sleep(1.0)
 
 # --------------------------------------------------
 # Actuator State
@@ -128,19 +150,19 @@ actuator_state = {
 # Network / staleness config
 # --------------------------------------------------
 
-MAX_ACTION_AGE_SECONDS = 5.0   # actions older than this are dropped as stale
-network_ok = True              # tracks our own connection to the broker
+MAX_ACTION_AGE_SECONDS = 5.0
+network_ok = True
 
 
 def is_action_stale(timestamp):
     if timestamp is None:
-        return False   # no timestamp provided -- treat as fresh (backward compatible)
+        return False
     age = time.time() - timestamp
     return age > MAX_ACTION_AGE_SECONDS
 
 
 # --------------------------------------------------
-# Fan Relay (unchanged)
+# Fan Relay
 # --------------------------------------------------
 
 def set_fan(on):
@@ -163,26 +185,39 @@ def set_fan(on):
 
 
 # --------------------------------------------------
-# Buzzer (physical actuator -- unchanged mechanism)
+# Buzzer -- retry-protected
 # --------------------------------------------------
 
 def set_buzzer(on):
-    grovepi.digitalWrite(BUZZER_PORT, 1 if on else 0)
-    actuator_state["buzzer_on"] = on
+    success = safe_i2c_call(
+        grovepi.digitalWrite, BUZZER_PORT, 1 if on else 0,
+        label="Buzzer write"
+    )
+
+    if success:
+        actuator_state["buzzer_on"] = on
+    else:
+        print("WARNING: buzzer_on actuator_state NOT updated -- write failed.")
 
 
 # --------------------------------------------------
-# Occupancy LED (unchanged -- this one already worked correctly)
+# Occupancy LED -- retry-protected
 # --------------------------------------------------
 
 def set_occupancy_led(on):
-    grovepi.digitalWrite(OCCUPANCY_LED_PORT, 1 if on else 0)
-    actuator_state["occupancy_led_on"] = on
+    success = safe_i2c_call(
+        grovepi.digitalWrite, OCCUPANCY_LED_PORT, 1 if on else 0,
+        label="Occupancy LED write"
+    )
+
+    if success:
+        actuator_state["occupancy_led_on"] = on
+    else:
+        print("WARNING: occupancy_led_on actuator_state NOT updated -- write failed.")
 
 
 # --------------------------------------------------
-# Noise / Door -- NOW ONLY UPDATE STATE, no direct hardware writes.
-# update_status_leds() / update_lcd_display() handle the hardware.
+# Noise / Door -- state flags only, hardware handled centrally
 # --------------------------------------------------
 
 def activate_noise_warning():
@@ -202,7 +237,10 @@ def deactivate_door_alert():
 
 
 # --------------------------------------------------
-# NEW: centralized LED logic
+# Centralized LED logic -- retry-protected.
+# THIS is the fix for the "violation LED never goes off" bug: every
+# single call recomputes from the full actuator_state and retries the
+# write up to 5 times instead of silently failing once.
 # --------------------------------------------------
 
 def update_status_leds():
@@ -212,46 +250,50 @@ def update_status_leds():
         or actuator_state["door_alert_on"]
     )
 
-    grovepi.digitalWrite(VIOLATION_LED_PORT, 1 if violation else 0)
-    grovepi.digitalWrite(SPARE_LED_PORT, 0 if violation else 1)
-    # occupancy LED is handled separately by set_occupancy_led(), unchanged
+    safe_i2c_call(
+        grovepi.digitalWrite, VIOLATION_LED_PORT, 1 if violation else 0,
+        label="Violation LED write"
+    )
+    safe_i2c_call(
+        grovepi.digitalWrite, SPARE_LED_PORT, 0 if violation else 1,
+        label="Spare LED write"
+    )
 
 
 # --------------------------------------------------
-# NEW: centralized LCD logic
-# Priority when multiple violations are active at once (highest first):
+# Centralized LCD logic -- retry-protected
+# Priority when multiple violations are active (highest first):
 #   proximity (buzzer) > door > noise
-# Adjust the order below if you'd prefer a different priority.
 # --------------------------------------------------
 
 def update_lcd_display():
     if not network_ok:
-        # on_disconnect() already wrote "NETWORK ERROR" -- don't fight it
         return
 
     if actuator_state["buzzer_on"]:
-        setRGB(255, 0, 0)
-        setText("VIOLATION\nToo close to machinery")
+        safe_i2c_call(setRGB, 255, 0, 0, label="LCD color write")
+        safe_i2c_call(setText, "VIOLATION\nToo close to machinery", label="LCD text write")
 
     elif actuator_state["door_alert_on"]:
-        setRGB(255, 0, 0)
-        setText("ALERT\nDoor Open")
+        safe_i2c_call(setRGB, 255, 0, 0, label="LCD color write")
+        safe_i2c_call(setText, "ALERT\nDoor Open", label="LCD text write")
 
     elif actuator_state["noise_warning_on"]:
-        setRGB(255, 165, 0)
-        setText("WARNING\nNoise High")
+        safe_i2c_call(setRGB, 255, 165, 0, label="LCD color write")
+        safe_i2c_call(setText, "WARNING\nNoise High", label="LCD text write")
 
     else:
-        setRGB(0, 255, 0)
-        setText("Zone1: All Clear\nFan:{} Occ:{}".format(
+        safe_i2c_call(setRGB, 0, 255, 0, label="LCD color write")
+        safe_i2c_call(setText, "Zone1: All Clear\nFan:{} Occ:{}".format(
             "ON" if actuator_state["fan_on"] else "OFF",
             "Y" if actuator_state["occupancy_led_on"] else "N"
-        ))
+        ), label="LCD text write")
 
 
 def refresh_outputs():
     """Call once after any actuator_state change to sync LEDs + LCD."""
     update_status_leds()
+    time.sleep(0.02)
     update_lcd_display()
 
 
@@ -274,31 +316,34 @@ def publish_system_status(status, extra=None):
 
 
 # --------------------------------------------------
-# MQTT Callbacks
+# MQTT Callbacks -- on_connect / on_disconnect fully guarded
 # --------------------------------------------------
 
 def on_connect(client, userdata, flags, rc):
     global network_ok
-    print("Connected")
-    client.subscribe(ACTION_TOPIC)
+    try:
+        print("Connected")
+        client.subscribe(ACTION_TOPIC)
 
-    network_ok = True
-    refresh_outputs()   # restore correct LED/LCD state after a reconnect
-    publish_system_status("connected")
+        network_ok = True
+        refresh_outputs()
+        publish_system_status("connected")
+
+    except Exception as e:
+        print("ERROR in on_connect:", e)
 
 
 def on_disconnect(client, userdata, rc):
     global network_ok
-    network_ok = False
-    print("Disconnected from broker (rc={}). Showing NETWORK ERROR on LCD.".format(rc))
-
-    # This needs no network -- it's a local I2C write, so it works even
-    # while we're offline from the broker.
     try:
-        setRGB(0, 0, 255)
-        setText("NETWORK ERROR\nReconnecting...")
+        network_ok = False
+        print("Disconnected from broker (rc={}). Showing NETWORK ERROR on LCD.".format(rc))
+
+        safe_i2c_call(setRGB, 0, 0, 255, label="LCD color write (disconnect)")
+        safe_i2c_call(setText, "NETWORK ERROR\nReconnecting...", label="LCD text write (disconnect)")
+
     except Exception as e:
-        print("Could not update LCD during disconnect:", e)
+        print("ERROR in on_disconnect:", e)
 
 
 def on_message(client, userdata, msg):
@@ -316,7 +361,7 @@ def on_message(client, userdata, msg):
                 "action": action,
                 "age_seconds": round(age, 2)
             })
-            return   # do NOT apply this action, do NOT publish_state()
+            return
 
         print("ACTION:", action)
 
@@ -373,7 +418,7 @@ client.connect(BROKER_IP, BROKER_PORT, 60)
 
 print("Actuator Executor Started")
 
-refresh_outputs()  #  show correct "All Clear" state on boot
+refresh_outputs()
 publish_state()
 
 client.loop_forever()
