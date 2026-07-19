@@ -1,322 +1,126 @@
-<div align="center">
+# IoT-PDDL
 
-# 🏠 Intelligent IoT Home Automation using AI Planning (PDDL)
+AI-planned IoT monitoring and automation. Instead of hardcoded `if temperature > 30: turn_on_fan()` rules, this system models the environment as a PDDL planning problem and lets the [Fast Downward](https://www.fast-downward.org/) planner decide which actions to take.
 
 [![Python](https://img.shields.io/badge/Python-3.x-blue.svg)](https://www.python.org/)
 [![MQTT](https://img.shields.io/badge/Protocol-MQTT-green.svg)](https://mqtt.org/)
-[![Flask](https://img.shields.io/badge/Flask-Web%20Dashboard-black.svg)](https://flask.palletsprojects.com/)
+[![Flask](https://img.shields.io/badge/Flask-Dashboard-black.svg)](https://flask.palletsprojects.com/)
 [![PDDL](https://img.shields.io/badge/AI-PDDL-orange.svg)](https://planning.wiki/)
-[![Fast Downward](https://img.shields.io/badge/Planner-Fast%20Downward-red.svg)](https://www.fast-downward.org/)
 
-An intelligent IoT-based home automation system that uses **Artificial Intelligence Planning (PDDL)** to make autonomous decisions based on real-time sensor data instead of traditional rule-based programming.
+## How it works
 
-</div>
-
----
-
-# 📖 Overview
-
-Traditional IoT systems rely on manually written rules such as:
-
-```python
-if temperature > 30:
-    turn_on_fan()
-```
-
-This project replaces hardcoded decision-making with an **AI Planner**.
-
-The system continuously receives sensor data through MQTT, converts the current environment into a **PDDL Planning Problem**, generates an optimal action plan using the **Fast Downward Planner**, and executes those actions on connected IoT devices.
-
-This approach makes the system:
-
-- Intelligent
-- Flexible
-- Easy to extend
-- Explainable
-- Scalable
-
----
-
-# ✨ Features
-
-- 🌡️ Real-time environmental monitoring
-- 🤖 AI Planning using PDDL
-- 📡 MQTT communication
-- 🧠 Fast Downward planner integration
-- 🌐 Live Flask dashboard
-- 🚪 Door monitoring
-- 🔔 Buzzer alerts
-- 💡 Automatic lighting control
-- 🌬️ Automatic fan control
-- 📊 Live sensor visualization
-- ⚡ Reliable MQTT message handling
-- 🔄 Automatic action execution
-
----
-
-# 🏗️ System Architecture
-
-```text
-                    +----------------------+
-                    |    Sensor Nodes      |
-                    | Temperature          |
-                    | Humidity             |
-                    | Noise                |
-                    | Door                 |
-                    | Motion               |
-                    +----------+-----------+
-                               |
-                               | MQTT
-                               |
-                               ▼
-                     +-------------------+
-                     |    MQTT Broker    |
-                     +---------+---------+
-                               |
-                               ▼
-                     +-------------------+
-                     |  AI Planner       |
-                     |  (planner.py)     |
-                     +---------+---------+
-                               |
-                  Generates PDDL Problem
-                               |
-                               ▼
-                    Fast Downward Planner
-                               |
-                     Optimal Action Plan
-                               |
-                               ▼
-                     +-------------------+
-                     | MQTT Action Topic |
-                     +---------+---------+
-                               |
-                               ▼
-                    +----------------------+
-                    | Raspberry Pi         |
-                    | Actuator Controller  |
-                    +---------+------------+
-                              |
-         +--------------------+--------------------+
-         |                    |                    |
-       Fan                 Lights              Buzzer
+1. **`sensor-pub2.py`** (runs on the Raspberry Pi) reads temperature/humidity, proximity, sound, door angle, and PIR motion via GrovePi, derives violation flags, and publishes everything to MQTT.
+2. **`planner.py`** subscribes to sensor data, writes the current state to `problem.pddl`, runs it against `domain.pddl` with Fast Downward, and publishes the resulting action plan.
+3. **`act4.py`** (runs on the Raspberry Pi) subscribes to the action topic and drives the physical outputs: fan relay, buzzer, status LEDs, and an RGB LCD.
+4. **`dashboard_server.py`** serves a live Flask + Socket.IO dashboard showing sensor readings, actuator states, and the current plan.
 
 ```
-
----
-
-# 🧠 AI Planning Workflow
-
-```text
-Sensor Data
-      │
-      ▼
-Current World State
-      │
-      ▼
-Generate problem.pddl
-      │
-      ▼
-Fast Downward Planner
-      │
-      ▼
-Optimal Plan
-      │
-      ▼
-Execute Actions
-      │
-      ▼
-Update Dashboard
+Sensors --MQTT--> Planner --PDDL/Fast Downward--> Plan --MQTT--> Actuators
+                      |                                             |
+                      +-------------------> Dashboard <-------------+
 ```
 
----
+## Monitored zone
 
-# 📂 Project Structure
+| Sensor | Reads | Triggers |
+|---|---|---|
+| Temperature & humidity | °C / % | `temp-high` above threshold |
+| Ultrasonic proximity | cm | `proximity-violation` below threshold |
+| Sound level | raw | `noise-high` above threshold |
+| Door angle | ° | `door-open` above threshold |
+| PIR motion | on/off | `occupied`, checked every 5 min and latched |
+
+Proximity and noise violations only count while the zone is `occupied` — occupancy gating is enforced both when sensor values are published and as a precondition in `domain.pddl`.
+
+## Planner actions
+
+`turn-on-fan` / `turn-off-fan` · `sound-buzzer` / `stop-buzzer` · `light-occupancy-led` / `unlight-occupancy-led` · `activate-noise-warning` / `clear-noise-warning` · `activate-door-alert` / `clear-door-alert`
+
+## Project structure
 
 ```
 iot-pddl/
-
-├── planner.py               # AI planner
-├── sensor-pub2.py           # Sensor publisher
-├── act4.py                  # Raspberry Pi actuator controller
-├── dashboard_server.py      # Flask dashboard
-├── dashboard.html           # Dashboard UI
-├── domain.pddl              # Planning domain
-├── problem.pddl             # Generated planning problem
-├── door_alert.mp3           # Alert sound
-└── README.md
+├── planner.py             # Builds problem.pddl, runs Fast Downward, publishes the plan
+├── sensor-pub2.py          # Reads sensors on the Pi, publishes to MQTT
+├── act4.py                 # Drives actuators on the Pi
+├── dashboard_server.py     # Flask + Socket.IO dashboard backend
+├── templates/
+│   └── dashboard.html      # Dashboard UI
+├── domain.pddl             # Planning domain (predicates + actions)
+├── problem.pddl            # Generated planning problem (overwritten each cycle)
+├── domain_old.pddl         # Previous domain version, kept for reference
+└── door_alert.mp3          # Door-alert sound played by the planner
 ```
 
----
+## Tech stack
 
-# 🛠️ Technologies Used
+| Layer | Tools |
+|---|---|
+| Sensing / actuation | Raspberry Pi, GrovePi, I2C relay + RGB LCD |
+| Messaging | MQTT (Mosquitto broker, Paho MQTT client) |
+| Planning | PDDL, Fast Downward (`astar(blind())`) |
+| Dashboard | Flask, Flask-SocketIO, HTML/CSS/JS |
 
-| Technology | Purpose |
-|------------|---------|
-| Python | Application development |
-| Raspberry Pi | IoT controller |
-| GrovePi | Sensor interface |
-| MQTT | Communication protocol |
-| Paho MQTT | MQTT client |
-| Flask | Web dashboard |
-| Flask-SocketIO | Live updates |
-| HTML/CSS/JavaScript | Dashboard UI |
-| PDDL | AI Planning |
-| Fast Downward | Automated Planner |
+## Getting started
 
----
+**Prerequisites**
+- Python 3.x
+- An MQTT broker (e.g. Mosquitto)
+- [Fast Downward](https://www.fast-downward.org/) installed — `planner.py` currently invokes it through WSL (`wsl bash -c "python3 /home/.../fast-downward.py ..."`), so update `FAST_DOWNWARD` and `win_to_wsl()` in `planner.py` to match your setup if you're not on Windows/WSL
+- GrovePi hardware, only required to run `sensor-pub2.py` and `act4.py` on the Raspberry Pi itself
 
-# ⚙️ How It Works
-
-1. Sensors continuously collect environmental data.
-2. Sensor values are published to the MQTT broker.
-3. The planner subscribes to MQTT topics.
-4. Current sensor values are converted into a PDDL planning problem.
-5. Fast Downward computes the optimal sequence of actions.
-6. Planned actions are published through MQTT.
-7. Raspberry Pi executes the actions.
-8. Dashboard updates in real time.
-
----
-
-# 🚀 Installation
-
-## Clone the repository
+**Install dependencies**
 
 ```bash
-git clone https://github.com/YashodhanMoghe-28/iot-pddl.git
-
-cd iot-pddl
+pip install paho-mqtt flask flask-socketio playsound3
+# on the Raspberry Pi only:
+pip install grovepi smbus
 ```
 
----
-
-## Install Python dependencies
+**Run**
 
 ```bash
-pip install -r requirements.txt
-```
+# MQTT broker
+sudo apt install mosquitto && sudo systemctl start mosquitto
 
----
-
-## Install MQTT Broker
-
-Example:
-
-```bash
-sudo apt install mosquitto
-sudo systemctl start mosquitto
-```
-
----
-
-## Start the Dashboard
-
-```bash
+# Dashboard
 python dashboard_server.py
-```
 
----
-
-## Start the Planner
-
-```bash
+# Planner
 python planner.py
-```
 
----
-
-## Start the Sensor Publisher
-
-```bash
+# On the Raspberry Pi
 python sensor-pub2.py
-```
-
----
-
-## Start the Raspberry Pi Controller
-
-```bash
 python act4.py
 ```
 
----
+Open `http://localhost:5000` (or your dashboard host) to watch it run.
 
-# 📸 Dashboard
+## MQTT topics
 
-> **Add a screenshot here**
+| Topic | Direction | Payload |
+|---|---|---|
+| `sensors/zone1` | sensor publisher → planner, dashboard | raw readings + derived violation flags |
+| `actions/zone1` | planner → Pi controller | planned action list |
+| `actuators/zone1` | Pi controller → dashboard | current actuator states |
+| `system/zone1` | various | connection status, stale-action notices |
 
-```
-images/dashboard.png
-```
+## Reliability notes
 
-```markdown
-![Dashboard](images/dashboard.png)
-```
+- All I2C writes on the Pi go through a retry wrapper (`safe_i2c_call`) rather than failing silently.
+- Actions older than `MAX_ACTION_AGE_SECONDS` are dropped instead of applied, so a network hiccup can't replay a stale command.
+- Status LEDs and the LCD are recomputed from the full actuator state on every update, not toggled independently.
 
----
+## Roadmap
 
-# 📷 Hardware Setup
-
-> Add photos of your hardware here.
-
-```
-images/hardware.jpg
-```
-
-```markdown
-![Hardware](images/hardware.jpg)
-```
-
----
-
-# 🔮 Future Improvements
-
-- Mobile application
-- Cloud deployment
-- Multiple IoT nodes
-- Voice assistant integration
-- Predictive automation using Machine Learning
-- Docker deployment
+- Mobile app
+- Cloud deployment / multi-node support
+- Predictive automation with ML
+- Docker packaging
 - Home Assistant integration
 
----
-
-# 📚 Learning Outcomes
-
-This project demonstrates knowledge of:
-
-- Artificial Intelligence Planning
-- PDDL Modeling
-- Automated Planning
-- MQTT Communication
-- Raspberry Pi Programming
-- IoT System Design
-- Flask Web Development
-- Real-Time Systems
-- Distributed Systems
-- Python Development
-
----
-
-# 👨‍💻 Author
+## Author
 
 **Yashodhan Moghe**
-
-M.Sc. Information Technology  
-University of Stuttgart
-
-**Areas of Interest**
-
-- Artificial Intelligence
-- Internet of Things (IoT)
-- Computer Vision
-- Robotics
-- Embedded Systems
-- Software Engineering
-
-GitHub: https://github.com/YashodhanMoghe-28
-
----
-
-# ⭐ If you found this project interesting, consider giving it a star!
+M.Sc. Information Technology, University of Stuttgart
+[GitHub](https://github.com/YashodhanMoghe-28)
