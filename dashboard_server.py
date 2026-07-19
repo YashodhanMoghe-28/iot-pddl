@@ -9,23 +9,20 @@ BROKER_PORT = 1883
 SENSOR_TOPIC   = "sensors/zone1"
 ACTUATOR_TOPIC = "actuators/zone1"
 ACTION_TOPIC   = "actions/zone1"
-SYSTEM_TOPIC   = "system/zone1"     # NEW: network status / stale-action notices
+SYSTEM_TOPIC   = "system/zone1"
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 connected_clients = 0
 
-
-# ← VERSION2 signature: client, userdata, connect_flags, reason_code, properties
 def on_connect(client, userdata, connect_flags, reason_code, properties):
     print("[MQTT] Connected, reason_code =", reason_code)
     client.subscribe(SENSOR_TOPIC)
     client.subscribe(ACTUATOR_TOPIC)
     client.subscribe(ACTION_TOPIC)
-    client.subscribe(SYSTEM_TOPIC)   # NEW
+    client.subscribe(SYSTEM_TOPIC)
     print("[MQTT] Subscribed to all topics")
-
 
 def on_message(client, userdata, msg):
     print("[MQTT] Received on:", msg.topic)
@@ -48,10 +45,9 @@ def on_message(client, userdata, msg):
         elif msg.topic == ACTION_TOPIC:
             socketio.emit("action_update", payload)
             print("[SocketIO] Emitted action_update")
-        elif msg.topic == SYSTEM_TOPIC:            # NEW
+        elif msg.topic == SYSTEM_TOPIC:
             socketio.emit("system_update", payload)
             print("[SocketIO] Emitted system_update")
-
 
 from paho.mqtt.client import CallbackAPIVersion
 mqtt_client = mqtt.Client(CallbackAPIVersion.VERSION2)
@@ -60,11 +56,9 @@ mqtt_client.on_message = on_message
 mqtt_client.connect(BROKER_IP, BROKER_PORT, keepalive=60)
 mqtt_client.loop_start()
 
-
 @app.route("/")
 def index():    
     return render_template("dashboard.html")
-
 
 @socketio.on("connect")
 def handle_connect():
@@ -72,13 +66,11 @@ def handle_connect():
     connected_clients += 1
     print("[SocketIO] Client connected. Total:", connected_clients)
 
-
 @socketio.on("disconnect")
 def handle_disconnect():
     global connected_clients
     connected_clients -= 1
     print("[SocketIO] Client disconnected. Total:", connected_clients)
-
 
 if __name__ == "__main__":
     print("Dashboard running at http://localhost:5000")

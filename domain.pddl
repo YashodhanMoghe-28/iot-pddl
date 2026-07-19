@@ -8,10 +8,6 @@
 
  (:predicates
 
-    ;; ==================================
-    ;; Environment predicates
-    ;; ==================================
-
     (temp-high ?z - zone)
 
     (proximity-violation ?z - zone)
@@ -21,10 +17,6 @@
     (door-open ?z - zone)
 
     (occupied ?z - zone)
-
-    ;; ==================================
-    ;; Actuator predicates
-    ;; ==================================
 
     (fan-on ?z - zone)
 
@@ -36,11 +28,6 @@
 
     (door-alert-on ?z - zone)
  )
-
- ;; =====================================================
- ;; FAN -- always active regardless of occupancy
- ;; (factory must stay ventilated whether or not anyone is there)
- ;; =====================================================
 
  (:action turn-on-fan
 
@@ -69,20 +56,6 @@
     :effect
        (not (fan-on ?z))
  )
-
- ;; =====================================================
- ;; BUZZER -- NOW requires occupancy.
- ;;
- ;; CHANGED: sound-buzzer now requires (occupied ?z) in addition to
- ;; (proximity-violation ?z). There is no point sounding a
- ;; too-close-to-machinery alarm if nobody is in the zone to be at risk.
- ;;
- ;; stop-buzzer is UNCHANGED. It doesn't need an occupancy check because
- ;; the sensor publisher already forces proximity-violation to false
- ;; whenever occupied is false -- so stop-buzzer's existing precondition
- ;; (not (proximity-violation ?z)) is already satisfied in that case.
- ;; This keeps the domain strict STRIPS (no disjunction needed).
- ;; =====================================================
 
  (:action sound-buzzer
 
@@ -113,10 +86,6 @@
        (not (buzzer-on ?z))
  )
 
- ;; =====================================================
- ;; OCCUPANCY LED -- unchanged, this IS the occupancy indicator
- ;; =====================================================
-
  (:action light-occupancy-led
 
     :parameters (?z - zone)
@@ -144,11 +113,6 @@
     :effect
        (not (occupancy-led-on ?z))
  )
-
- ;; =====================================================
- ;; NOISE WARNING -- NOW requires occupancy, same reasoning as buzzer.
- ;; clear-noise-warning UNCHANGED for the same reason as stop-buzzer.
- ;; =====================================================
 
  (:action activate-noise-warning
 
@@ -178,11 +142,6 @@
     :effect
        (not (noise-warning-on ?z))
  )
-
- ;; =====================================================
- ;; DOOR ALERT -- always active regardless of occupancy
- ;; (security check, same reasoning as fan)
- ;; =====================================================
 
  (:action activate-door-alert
 

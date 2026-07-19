@@ -1,48 +1,3 @@
-"""
-actuator_executor.py
-
-Runs on Raspberry Pi
-
-THIS IS THE COMPLETE, FINAL VERSION. Please REPLACE your existing act4.py
-entirely with this file rather than merging by hand -- the LED-stuck bug
-you saw is because several earlier fixes (the universal I2C retry
-wrapper, the crash-safe on_connect, the boot-time force-off writes)
-were not present in the version you were running.
-
-ALL FIXES INCLUDED:
-
-  1. LED FIX -- violation LED / spare LED recomputed from FULL
-     actuator_state every message (not touched independently by
-     multiple functions).
-
-  2. LCD DEFAULT-STATE FIX -- always writes either the highest-priority
-     violation message or a default "All Clear" message every cycle.
-
-  3. NETWORK / STALE-ACTION HANDLING -- actions older than
-     MAX_ACTION_AGE_SECONDS are dropped instead of applied.
-
-  4. UNIVERSAL I2C RETRY WRAPPER (safe_i2c_call) -- EVERY I2C write
-     (relay, buzzer, both LEDs, LCD color, LCD text) goes through this.
-     Retries up to 5 times with backoff, NEVER raises. This is almost
-     certainly why your violation LED was getting stuck: the "turn LED
-     off" write was failing on I2C glitches and had no retry, so the
-     physical LED kept showing stale state even though actuator_state
-     was already correct in Python.
-
-  5. on_connect / on_disconnect fully wrapped in try/except -- an I2C
-     error during either callback can no longer crash loop_forever().
-
-  6. Boot-time force-off writes for all digital outputs, so nothing
-     powers up in an undefined/floating state.
-
-  7. Occupancy note: this file needs NO changes for the new
-     occupancy-gating feature. That logic lives entirely in
-     sensor-pub2.py (which sensor values get treated as violations)
-     and domain.pddl (which actions the planner is allowed to choose).
-     This script just executes whatever action commands it receives,
-     as before.
-"""
-
 import time
 import json
 import smbus
@@ -50,20 +5,12 @@ import grovepi
 import paho.mqtt.client as mqtt
 from grove_rgb_lcd import setRGB, setText
 
-# --------------------------------------------------
-# MQTT
-# --------------------------------------------------
-
 BROKER_IP = "192.168.0.105"
 BROKER_PORT = 1883
 
 ACTION_TOPIC = "actions/zone1"
 ACTUATOR_TOPIC = "actuators/zone1"
 SYSTEM_TOPIC = "system/zone1"
-
-# --------------------------------------------------
-# Ports
-# --------------------------------------------------
 
 VIOLATION_LED_PORT = 5
 OCCUPANCY_LED_PORT = 6
@@ -75,24 +22,10 @@ grovepi.pinMode(OCCUPANCY_LED_PORT, "OUTPUT")
 grovepi.pinMode(SPARE_LED_PORT, "OUTPUT")
 grovepi.pinMode(BUZZER_PORT, "OUTPUT")
 
-# Force all digital outputs to a known OFF state at boot, so nothing
-# powers up in an undefined/floating state (this is why the buzzer
-# was sounding immediately on startup previously).
 grovepi.digitalWrite(VIOLATION_LED_PORT, 0)
 grovepi.digitalWrite(OCCUPANCY_LED_PORT, 0)
-grovepi.digitalWrite(SPARE_LED_PORT, 1)   # "all clear" indicator, on by default
+grovepi.digitalWrite(SPARE_LED_PORT, 1)
 grovepi.digitalWrite(BUZZER_PORT, 0)
-
-# --------------------------------------------------
-# Universal I2C retry wrapper
-#
-# Wraps ANY I2C-touching call (grovepi.digitalWrite, setRGB, setText,
-# or a raw bus.write_byte_data) so a transient bus glitch never raises
-# out of a callback and never silently leaves hardware in a stale
-# state. Retries up to max_retries times with backoff, then gives up
-# and returns False -- caller decides what to do (usually: don't
-# update actuator_state, so the system stays truthful).
-# --------------------------------------------------
 
 def safe_i2c_call(fn, *args, max_retries=5, label="I2C call", **kwargs):
     for attempt in range(1, max_retries + 1):
@@ -105,11 +38,6 @@ def safe_i2c_call(fn, *args, max_retries=5, label="I2C call", **kwargs):
     print("{} FAILED after {} attempts -- giving up.".format(label, max_retries))
     return False
 
-
-# --------------------------------------------------
-# Relay Board
-# --------------------------------------------------
-
 DEVICE_ADDRESS = 0x20
 DEVICE_REG_MODE1 = 0x06
 
@@ -118,25 +46,15 @@ bus = smbus.SMBus(1)
 relay_state = 0xFF
 time.sleep(0.2)
 
-
 def i2c_write_relay(value, max_retries=5):
     return safe_i2c_call(
         bus.write_byte_data, DEVICE_ADDRESS, DEVICE_REG_MODE1, value,
         max_retries=max_retries, label="Relay write"
     )
 
-
 i2c_write_relay(relay_state)
 
-# Extra settle time before the FIRST LCD transaction specifically --
-# LCD failures were observed on the very first I2C write at cold boot,
-# before any other bus activity, suggesting it needs more time to
-# settle right after power-up.
 time.sleep(1.0)
-
-# --------------------------------------------------
-# Actuator State
-# --------------------------------------------------
 
 actuator_state = {
     "fan_on": False,
@@ -146,24 +64,14 @@ actuator_state = {
     "door_alert_on": False
 }
 
-# --------------------------------------------------
-# Network / staleness config
-# --------------------------------------------------
-
 MAX_ACTION_AGE_SECONDS = 5.0
 network_ok = True
-
 
 def is_action_stale(timestamp):
     if timestamp is None:
         return False
     age = time.time() - timestamp
     return age > MAX_ACTION_AGE_SECONDS
-
-
-# --------------------------------------------------
-# Fan Relay
-# --------------------------------------------------
 
 def set_fan(on):
     global relay_state
@@ -183,11 +91,6 @@ def set_fan(on):
     else:
         print("WARNING: fan_on actuator_state NOT updated -- relay write failed.")
 
-
-# --------------------------------------------------
-# Buzzer -- retry-protected
-# --------------------------------------------------
-
 def set_buzzer(on):
     success = safe_i2c_call(
         grovepi.digitalWrite, BUZZER_PORT, 1 if on else 0,
@@ -198,11 +101,6 @@ def set_buzzer(on):
         actuator_state["buzzer_on"] = on
     else:
         print("WARNING: buzzer_on actuator_state NOT updated -- write failed.")
-
-
-# --------------------------------------------------
-# Occupancy LED -- retry-protected
-# --------------------------------------------------
 
 def set_occupancy_led(on):
     success = safe_i2c_call(
@@ -215,33 +113,17 @@ def set_occupancy_led(on):
     else:
         print("WARNING: occupancy_led_on actuator_state NOT updated -- write failed.")
 
-
-# --------------------------------------------------
-# Noise / Door -- state flags only, hardware handled centrally
-# --------------------------------------------------
-
 def activate_noise_warning():
     actuator_state["noise_warning_on"] = True
-
 
 def deactivate_noise_warning():
     actuator_state["noise_warning_on"] = False
 
-
 def activate_door_alert():
     actuator_state["door_alert_on"] = True
 
-
 def deactivate_door_alert():
     actuator_state["door_alert_on"] = False
-
-
-# --------------------------------------------------
-# Centralized LED logic -- retry-protected.
-# THIS is the fix for the "violation LED never goes off" bug: every
-# single call recomputes from the full actuator_state and retries the
-# write up to 5 times instead of silently failing once.
-# --------------------------------------------------
 
 def update_status_leds():
     violation = (
@@ -258,13 +140,6 @@ def update_status_leds():
         grovepi.digitalWrite, SPARE_LED_PORT, 0 if violation else 1,
         label="Spare LED write"
     )
-
-
-# --------------------------------------------------
-# Centralized LCD logic -- retry-protected
-# Priority when multiple violations are active (highest first):
-#   proximity (buzzer) > door > noise
-# --------------------------------------------------
 
 def update_lcd_display():
     if not network_ok:
@@ -289,21 +164,14 @@ def update_lcd_display():
             "Y" if actuator_state["occupancy_led_on"] else "N"
         ), label="LCD text write")
 
-
 def refresh_outputs():
     """Call once after any actuator_state change to sync LEDs + LCD."""
     update_status_leds()
     time.sleep(0.02)
     update_lcd_display()
 
-
-# --------------------------------------------------
-# Publish State
-# --------------------------------------------------
-
 def publish_state():
     client.publish(ACTUATOR_TOPIC, json.dumps(actuator_state))
-
 
 def publish_system_status(status, extra=None):
     payload = {"status": status, "timestamp": time.time()}
@@ -313,11 +181,6 @@ def publish_system_status(status, extra=None):
         client.publish(SYSTEM_TOPIC, json.dumps(payload))
     except Exception as e:
         print("Could not publish system status:", e)
-
-
-# --------------------------------------------------
-# MQTT Callbacks -- on_connect / on_disconnect fully guarded
-# --------------------------------------------------
 
 def on_connect(client, userdata, flags, rc):
     global network_ok
@@ -332,7 +195,6 @@ def on_connect(client, userdata, flags, rc):
     except Exception as e:
         print("ERROR in on_connect:", e)
 
-
 def on_disconnect(client, userdata, rc):
     global network_ok
     try:
@@ -344,7 +206,6 @@ def on_disconnect(client, userdata, rc):
 
     except Exception as e:
         print("ERROR in on_disconnect:", e)
-
 
 def on_message(client, userdata, msg):
     try:
@@ -401,20 +262,11 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print("ERROR handling action message:", e)
 
-
-# --------------------------------------------------
-# MQTT
-# --------------------------------------------------
-
 client = mqtt.Client()
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
 client.on_message = on_message
 client.connect(BROKER_IP, BROKER_PORT, 60)
-
-# --------------------------------------------------
-# Main
-# --------------------------------------------------
 
 print("Actuator Executor Started")
 

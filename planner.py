@@ -7,37 +7,21 @@ import threading
 import paho.mqtt.client as mqtt
 from playsound3 import playsound
 
-# =====================================================
-# MQTT
-# =====================================================
-
 BROKER_IP = "localhost"
 BROKER_PORT = 1883
 
 SENSOR_TOPIC = "sensors/zone1"
 ACTUATOR_TOPIC = "actuators/zone1"
 ACTION_TOPIC = "actions/zone1"
-SYSTEM_TOPIC = "system/zone1"    # NEW: network status notices for the dashboard
-
-# =====================================================
-# Fast Downward
-# =====================================================
+SYSTEM_TOPIC = "system/zone1"
 
 FAST_DOWNWARD = "/home/yashodhan/fast-downward/fast-downward.py"
 
 DOMAIN_FILE = "domain.pddl"
 PROBLEM_FILE = "problem.pddl"
 
-# =====================================================
-# NEW: reliable-publish config
-# =====================================================
-
 MAX_PUBLISH_RETRIES = 3
-PUBLISH_CONFIRM_TIMEOUT = 2   # seconds to wait for broker PUBACK per attempt
-
-# =====================================================
-# State
-# =====================================================
+PUBLISH_CONFIRM_TIMEOUT = 2
 
 sensor_state = {}
 
@@ -53,15 +37,7 @@ last_plan = []
 
 door_alert_playing = False
 
-# =====================================================
-# Planning lock — prevents overlapping planner calls
-# =====================================================
-
 planning_lock = threading.Lock()
-
-# =====================================================
-# MP3
-# =====================================================
 
 def play_door_alert():
 
@@ -88,24 +64,7 @@ def play_door_alert():
         daemon=True
     ).start()
 
-# =====================================================
-# MQTT Client
-# =====================================================
-
 client = mqtt.Client()
-
-# =====================================================
-# NEW: Reliable action publishing
-#
-# Every action is timestamped so the RPi can detect and drop it if it
-# arrives too late (see actuator_executor.py's MAX_ACTION_AGE_SECONDS).
-# Publish uses QoS 1 + wait_for_publish() to confirm the BROKER received
-# it (this does not guarantee the RPi processed it -- that would need a
-# separate application-level ACK -- but it's a strong, simple signal
-# that the network link to the broker itself is healthy). On repeated
-# failure, a network_error notice is published to SYSTEM_TOPIC so the
-# dashboard can show it.
-# =====================================================
 
 def publish_action_reliable(action):
     payload = json.dumps({
@@ -147,54 +106,29 @@ def publish_action_reliable(action):
 
     return False
 
-
-# =====================================================
-# Goal Generation (unchanged)
-# =====================================================
-
 def desired_actuator_state(s_state):
 
     goal = []
-
-    # -----------------------------
-    # Temperature -> Fan
-    # -----------------------------
 
     if s_state.get("temp_high"):
         goal.append("(fan-on zone1)")
     else:
         goal.append("(not (fan-on zone1))")
 
-    # -----------------------------
-    # Proximity -> Buzzer
-    # -----------------------------
-
     if s_state.get("proximity_violation"):
         goal.append("(buzzer-on zone1)")
     else:
         goal.append("(not (buzzer-on zone1))")
-
-    # -----------------------------
-    # Occupancy -> LED
-    # -----------------------------
 
     if s_state.get("occupied"):
         goal.append("(occupancy-led-on zone1)")
     else:
         goal.append("(not (occupancy-led-on zone1))")
 
-    # -----------------------------
-    # Noise
-    # -----------------------------
-
     if s_state.get("noise_high"):
         goal.append("(noise-warning-on zone1)")
     else:
         goal.append("(not (noise-warning-on zone1))")
-
-    # -----------------------------
-    # Door
-    # -----------------------------
 
     if s_state.get("door_open"):
         goal.append("(door-alert-on zone1)")
@@ -203,17 +137,9 @@ def desired_actuator_state(s_state):
 
     return goal
 
-# =====================================================
-# Problem Generator (unchanged)
-# =====================================================
-
 def generate_problem(s_state, a_state):
 
     init = []
-
-    # =================================
-    # Sensor predicates
-    # =================================
 
     if s_state.get("temp_high"):
         init.append("(temp-high zone1)")
@@ -229,10 +155,6 @@ def generate_problem(s_state, a_state):
 
     if s_state.get("occupied"):
         init.append("(occupied zone1)")
-
-    # =================================
-    # Actuator predicates
-    # =================================
 
     if a_state["fan_on"]:
         init.append("(fan-on zone1)")
@@ -276,10 +198,6 @@ def generate_problem(s_state, a_state):
     with open(PROBLEM_FILE, "w") as f:
         f.write(problem)
 
-# =====================================================
-# Windows Path -> WSL Path (unchanged)
-# =====================================================
-
 def win_to_wsl(path):
 
     path = os.path.abspath(path)
@@ -289,10 +207,6 @@ def win_to_wsl(path):
     rest = path[2:].replace("\\", "/")
 
     return f"/mnt/{drive}{rest}"
-
-# =====================================================
-# Planner (unchanged)
-# =====================================================
 
 def run_planner():
 
@@ -322,10 +236,6 @@ def run_planner():
 
     return parse_plan()
 
-# =====================================================
-# Parse Plan (unchanged)
-# =====================================================
-
 def parse_plan():
 
     if not os.path.exists("sas_plan"):
@@ -347,14 +257,6 @@ def parse_plan():
             actions.append(action)
 
     return actions
-
-# =====================================================
-# Execute Plan
-#
-# CHANGED: now calls publish_action_reliable() instead of a raw
-# client.publish(), so each action is timestamped and confirmed (or
-# retried/logged as a network error) instead of fire-and-forget.
-# =====================================================
 
 def execute_plan(actions):
 
@@ -378,22 +280,17 @@ def execute_plan(actions):
 
         time.sleep(0.2)
 
-# =====================================================
-# Planning Cycle — runs in background thread (unchanged)
-# =====================================================
-
 def planning_cycle():
 
     if not sensor_state:
         return
 
-    # Snapshot current state so mid-run changes don't corrupt the problem
     s_snapshot = dict(sensor_state)
     a_snapshot = dict(actuator_state)
 
     def run():
 
-        with planning_lock:   # only one planner process at a time
+        with planning_lock:
 
             generate_problem(s_snapshot, a_snapshot)
 
@@ -402,10 +299,6 @@ def planning_cycle():
             execute_plan(plan)
 
     threading.Thread(target=run, daemon=True).start()
-
-# =====================================================
-# MQTT Callbacks (unchanged)
-# =====================================================
 
 def on_connect(client, userdata, flags, rc):
 
@@ -431,21 +324,14 @@ def on_message(client, userdata, msg):
         print("\nSensor Update")
         print(sensor_state)
 
-        # Audio fires independently of the planner —
-        # door_alert_playing flag prevents overlapping playback
         if sensor_state.get("door_open"):
             play_door_alert()
 
-        # Planning runs in background, MQTT thread is never blocked
         planning_cycle()
 
     elif msg.topic == ACTUATOR_TOPIC:
 
         actuator_state = data
-
-# =====================================================
-# Main
-# =====================================================
 
 client.on_connect = on_connect
 client.on_message = on_message
